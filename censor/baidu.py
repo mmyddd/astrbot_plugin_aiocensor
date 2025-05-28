@@ -1,12 +1,12 @@
 # data/plugins/astrbot_plugin_aiocensor/censor/baidu.py
 import aiohttp
 import asyncio
+import json
 from datetime import datetime
 from typing import Any, Tuple
 
-# 修改为从common导入
-from ..common.exceptions import CensorError, APILimitError, AuthError
 from ..common import RiskLevel
+from ..common.exceptions import CensorError, APILimitError, AuthError
 
 
 class BaiduAuth:
@@ -18,7 +18,7 @@ class BaiduAuth:
         self._secret_key = secret_key
         self._token = None
         self._last_request_time = datetime.now()
-        self._semaphore = asyncio.Semaphore(2)
+        self._semaphore = asyncio.Semaphore(1)  # 更严格的并发控制
 
     async def fetch_token(self) -> str:
         """获取百度API的access token"""
@@ -34,7 +34,11 @@ class BaiduAuth:
 
         async with aiohttp.ClientSession() as session:
             async with session.post(token_url, data=params) as response:
-                result = await response.json()
+                text = await response.text()
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    raise AuthError(f"获取token失败，响应不是JSON格式: {text}")
 
         if 'access_token' in result and 'scope' in result:
             if 'brain_all_scope' not in result['scope'].split(' '):
@@ -42,7 +46,7 @@ class BaiduAuth:
             self._token = result['access_token']
             return self._token
         else:
-            raise AuthError('请检查API_KEY和SECRET_KEY是否正确')
+            raise AuthError(f'获取token失败: {result.get("error_description", "未知错误")}')
 
 
 class BaiduCensor:
@@ -54,11 +58,12 @@ class BaiduCensor:
         self._image_url = "https://aip.baidubce.com/rest/2.0/solution/v1/img_censor/user_defined"
         self._auth = BaiduAuth(config["api_key"], config["secret_key"])
         self._session = aiohttp.ClientSession()
-        self._request_interval = config.get("request_interval", 0.2)
+        self._request_interval = config.get("request_interval", 0.5)  # 默认间隔增加到500ms
 
     async def _make_request(self, url: str, payload: dict) -> dict:
-        """封装请求逻辑"""
+        """封装请求逻辑，增强错误处理"""
         async with self._auth._semaphore:
+            # 确保请求间隔
             elapsed = (datetime.now() - self._auth._last_request_time).total_seconds()
             if elapsed < self._request_interval:
                 await asyncio.sleep(self._request_interval - elapsed)
@@ -72,23 +77,34 @@ class BaiduCensor:
                     request_url,
                     data=payload,
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=aiohttp.ClientTimeout(total=15)
                 ) as response:
-                    result = await response.json()
+                    text = await response.text()
+                    
+                    # 手动处理JSON解析，避免mimetype问题
+                    try:
+                        result = json.loads(text)
+                    except json.JSONDecodeError:
+                        if "request limit reached" in text:
+                            self._request_interval = min(2.0, self._request_interval * 1.5)
+                            raise APILimitError(f"API请求限制: {text}")
+                        raise CensorError(f"响应不是有效的JSON: {text}")
                     
                     if 'error_code' in result:
                         error_msg = result.get('error_msg', '未知错误')
                         if 'request limit reached' in error_msg:
-                            self._request_interval = min(1.0, self._request_interval * 1.5)
-                            await asyncio.sleep(self._request_interval)
+                            self._request_interval = min(2.0, self._request_interval * 1.5)
                             raise APILimitError(f"API请求限制: {error_msg}")
-                        raise CensorError(f"百度内容审核请求异常: {error_msg}")
+                        raise CensorError(f"百度API错误: {error_msg}")
                     
-                    self._request_interval = max(0.1, self._request_interval * 0.9)
+                    # 请求成功时适当减少间隔时间
+                    self._request_interval = max(0.3, self._request_interval * 0.9)
                     return result
                     
             except aiohttp.ClientError as e:
                 raise CensorError(f"网络请求异常: {str(e)}")
+            except Exception as e:
+                raise CensorError(f"未知异常: {str(e)}")
 
     async def detect_text(self, text: str) -> Tuple[RiskLevel, set[str]]:
         """文本内容审核"""
@@ -115,6 +131,8 @@ class BaiduCensor:
                     risk_words.add(item["msg"])
 
             return risk_level, risk_words
+        except APILimitError:
+            raise  # 直接抛出限流错误
         except Exception as e:
             raise CensorError(f"文本审核失败: {str(e)}")
 
@@ -146,6 +164,8 @@ class BaiduCensor:
                     risk_words.add(str(item["subType"]))
 
             return risk_level, risk_words
+        except APILimitError:
+            raise  # 直接抛出限流错误
         except Exception as e:
             raise CensorError(f"图片审核失败: {str(e)}")
 
