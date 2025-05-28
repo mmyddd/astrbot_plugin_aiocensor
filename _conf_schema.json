@@ -124,6 +124,11 @@
       "secret_key": {
         "description": "百度内容安全 Secret Key",
         "type": "string"
+      },
+      "request_interval": {
+          "description": "API请求最小间隔(秒)，默认0.2",
+          "type": "float",
+          "default": 0.2
       }
     }
   },

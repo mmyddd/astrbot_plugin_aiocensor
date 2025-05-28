@@ -1,24 +1,26 @@
-import asyncio
+# data/plugins/astrbot_plugin_aiocensor/censor/baidu.py
+import aiohttp
 import base64
 import json
-from typing import Any
+import asyncio
+from typing import Any, Tuple
+from datetime import datetime
 
-import aiohttp
-
-from ..common.interfaces import CensorBase  # type: ignore
-from ..common.types import CensorError, RiskLevel  # type: ignore
-from ..common.utils import censor_retry  # type: ignore
+from ..common import CensorBase, RiskLevel  # type: ignore
+from ..common.exceptions import CensorError  # type: ignore
 
 
 class BaiduAuth:
     """百度内容安全API鉴权"""
-
-    __slots__ = ("_api_key", "_secret_key", "_token")
+    __slots__ = ("_api_key", "_secret_key", "_token", "_last_request_time", "_semaphore")
 
     def __init__(self, api_key: str, secret_key: str):
         self._api_key = api_key
         self._secret_key = secret_key
         self._token = None
+        self._last_request_time = datetime.now()
+        # 限制并发请求数为2，避免触发QPS限制
+        self._semaphore = asyncio.Semaphore(2)
 
     async def fetch_token(self) -> str:
         """获取百度API的access token"""
@@ -47,116 +49,106 @@ class BaiduAuth:
 
 class BaiduCensor(CensorBase):
     """百度内容审核"""
-
-    __slots__ = ("_text_url", "_image_url", "_auth", "_session", "_semaphore")
+    __slots__ = ("_text_url", "_image_url", "_auth", "_session", "_request_interval")
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._text_url = "https://aip.baidubce.com/rest/2.0/solution/v1/text_censor/v2/user_defined"
         self._image_url = "https://aip.baidubce.com/rest/2.0/solution/v1/img_censor/user_defined"
         self._auth = BaiduAuth(config["api_key"], config["secret_key"])
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
-        self._semaphore = asyncio.Semaphore(80)
+        self._session = aiohttp.ClientSession()
+        # 默认请求间隔200ms，避免触发QPS限制
+        self._request_interval = config.get("request_interval", 0.2)
 
-    async def __aenter__(self) -> "BaiduCensor":
-        return self
+    async def _make_request(self, url: str, payload: dict) -> dict:
+        """封装请求逻辑，添加频率控制"""
+        async with self._auth._semaphore:
+            # 确保请求间隔
+            elapsed = (datetime.now() - self._auth._last_request_time).total_seconds()
+            if elapsed < self._request_interval:
+                await asyncio.sleep(self._request_interval - elapsed)
+            
+            self._auth._last_request_time = datetime.now()
+            token = await self._auth.fetch_token()
+            request_url = f"{url}?access_token={token}"
+            
+            try:
+                async with self._session.post(
+                    request_url,
+                    data=payload,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    result = await response.json()
+                    
+                    if 'error_code' in result:
+                        error_msg = result.get('error_msg', '未知错误')
+                        if 'request limit reached' in error_msg:
+                            # 遇到限流错误时自动增加间隔时间
+                            self._request_interval = min(1.0, self._request_interval * 1.5)
+                            await asyncio.sleep(self._request_interval)
+                            return await self._make_request(url, payload)
+                        raise CensorError(f"百度内容审核请求异常: {error_msg}")
+                    
+                    # 请求成功时适当减少间隔时间
+                    self._request_interval = max(0.1, self._request_interval * 0.9)
+                    return result
+                    
+            except aiohttp.ClientError as e:
+                raise CensorError(f"网络请求异常: {str(e)}")
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    async def close(self):
-        await self._session.close()
-
-    @censor_retry(max_retries=3)
-    async def _check_single_text(self, text: str) -> tuple[RiskLevel, set[str]]:
-        """对单段文本进行内容审核"""
-        token = await self._auth.fetch_token()
-        url = f"{self._text_url}?access_token={token}"
+    async def detect_text(self, text: str) -> Tuple[RiskLevel, set[str]]:
+        """文本内容审核"""
         payload = {"text": text}
+        result = await self._make_request(self._text_url, payload)
 
-        async with self._semaphore:
-            async with self._session.post(
-                url, 
-                data=payload,
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
+        conclusion = result.get("conclusion", {})
+        conclusion_type = conclusion.get("type", 1)
 
-                if 'error_code' in result:
-                    raise CensorError(f"内容审核请求异常: {result.get('error_msg')}")
+        if conclusion_type == 1:
+            risk_level = RiskLevel.Pass
+        elif conclusion_type == 2:
+            risk_level = RiskLevel.Block
+        else:
+            risk_level = RiskLevel.Review
 
-                risk_words_set: set[str] = set()
-                conclusion = result.get("conclusion", "")
-                conclusion_type = conclusion.get("type", 1)  # 1:合规，2:不合规，3:疑似，4:审核失败
+        risk_words = set()
+        for item in result.get("data", []):
+            if "hits" in item:
+                for hit in item["hits"]:
+                    risk_words.update(hit.get("words", []))
+            if "msg" in item:
+                risk_words.add(item["msg"])
 
-                if conclusion_type == 1:
-                    risk_level = RiskLevel.Pass
-                elif conclusion_type == 2:
-                    risk_level = RiskLevel.Block
-                else:
-                    risk_level = RiskLevel.Review
+        return risk_level, risk_words
 
-                # 收集风险词
-                for item in result.get("data", []):
-                    if "hits" in item:
-                        for hit in item["hits"]:
-                            risk_words_set.update(hit.get("words", []))
-
-                return risk_level, risk_words_set
-
-    async def detect_text(self, text: str) -> tuple[RiskLevel, set[str]]:
-        """对文本进行内容审核"""
-        try:
-            if not text:
-                return RiskLevel.Pass, set()
-
-            return await self._check_single_text(text)
-
-        except Exception as e:
-            raise CensorError(f"内容审核过程中发生异常: {e!s}")
-
-    @censor_retry(max_retries=3)
-    async def detect_image(self, image: str) -> tuple[RiskLevel, set[str]]:  # type: ignore
-        """对图片进行内容审核"""
-        token = await self._auth.fetch_token()
-        url = f"{self._image_url}?access_token={token}"
-
-        if image.startswith("base64://"):
-            image_content = image[9:]
-            payload = {"image": image_content}
-        elif image.startswith("http"):
+    async def detect_image(self, image: str) -> Tuple[RiskLevel, set[str]]:
+        """图片内容审核"""
+        if image.startswith("http"):
             payload = {"imgUrl": image}
         else:
-            raise CensorError("预期外的输入")
+            payload = {"image": image.split("base64://")[1] if image.startswith("base64://") else image}
 
-        async with self._semaphore:
-            async with self._session.post(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
+        result = await self._make_request(self._image_url, payload)
 
-                if 'error_code' in result:
-                    raise CensorError(f"内容审核请求异常: {result.get('error_msg')}")
+        conclusion = result.get("conclusion", {})
+        conclusion_type = conclusion.get("type", 1)
 
-                reason_words_set: set[str] = set()
-                conclusion = result.get("conclusion", {})
-                conclusion_type = conclusion.get("type", 1)  # 1:合规，2:不合规，3:疑似，4:审核失败
+        if conclusion_type == 1:
+            risk_level = RiskLevel.Pass
+        elif conclusion_type == 2:
+            risk_level = RiskLevel.Block
+        else:
+            risk_level = RiskLevel.Review
 
-                if conclusion_type == 1:
-                    risk_level = RiskLevel.Pass
-                elif conclusion_type == 2:
-                    risk_level = RiskLevel.Block
-                else:
-                    risk_level = RiskLevel.Review
+        risk_words = set()
+        for item in result.get("data", []):
+            if "msg" in item:
+                risk_words.add(item["msg"])
+            if "subType" in item:
+                risk_words.add(str(item["subType"]))
 
-                # 收集风险描述
-                for item in result.get("data", []):
-                    if "msg" in item:
-                        reason_words_set.add(item["msg"])
-                    if "subType" in item:
-                        reason_words_set.add(str(item["subType"]))
+        return risk_level, risk_words
 
-                return risk_level, reason_words_set
+    async def close(self) -> None:
+        """清理资源"""
+        await self._session.close()
