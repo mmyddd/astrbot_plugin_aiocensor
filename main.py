@@ -1,6 +1,7 @@
 import os
 import secrets
 from multiprocessing import Process
+from typing import Any, Dict, Set
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type:ignore
 
@@ -146,36 +147,11 @@ class AIOCensor(Star):
             except Exception as e:
                 logger.error(f"消息处置失败: {e!s}")
 
-    async def _handle_baidu_censor_result(self, result: dict, content_type: str) -> CensorResult:
-        """处理百度内容安全返回结果"""
-        conclusion = result.get("conclusion", {})
-        conclusion_type = conclusion.get("type", 1)  # 1:合规，2:不合规，3:疑似，4:审核失败
-
-        if conclusion_type == 1:
-            risk_level = RiskLevel.Pass
-        elif conclusion_type == 2:
-            risk_level = RiskLevel.Block
-        else:
-            risk_level = RiskLevel.Review
-
-        risk_words = set()
-        for item in result.get("data", []):
-            if "hits" in item:
-                for hit in item["hits"]:
-                    risk_words.update(hit.get("words", []))
-            if "msg" in item:
-                risk_words.add(item["msg"])
-            if "subType" in item:
-                risk_words.add(str(item["subType"]))
-
-        # 过滤空结果
-        filtered_words = {w for w in risk_words if w and w != "无具体原因"}
-        return CensorResult(
-            risk_level=risk_level,
-            risk_words=filtered_words if filtered_words else set(),
-            content_type=content_type,
-            provider="baidu",
-        )
+    def _ensure_risk_words(self, res: CensorResult) -> Set[str]:
+        """确保CensorResult对象有risk_words属性"""
+        if not hasattr(res, 'risk_words'):
+            setattr(res, 'risk_words', set())
+        return res.risk_words if res.risk_words else set()
 
     async def handle_message(
         self, event: AstrMessageEvent, chain: list[BaseMessageComponent]
@@ -199,7 +175,6 @@ class AIOCensor(Star):
                             comp.text, event.unified_msg_origin
                         )
                 elif isinstance(comp, Image) and self.config.get("enable_image_censor"):
-                    # 根据配置选择单一审核方式
                     use_baidu = (
                         self.config.get("baidu_censor", {}).get("enable_image_censor", False)
                         and hasattr(self.censor_flow, '_baidu_censor')
@@ -213,18 +188,20 @@ class AIOCensor(Star):
                             comp.url, event.unified_msg_origin
                         )
                 
-                # 只有当有实际风险内容时才处理
-                if res and res.risk_level != RiskLevel.Pass and res.risk_words:
-                    res.extra = {"user_id_str": event.get_sender_id()}
-                    if self.config.get("enable_audit_log", True):
-                        self.db_mgr.add_audit_log(res)
-                    
-                    if res.risk_level == RiskLevel.Block:
-                        if (event.get_platform_name() == "aiocqhttp" 
-                            and event.get_group_id()):
-                            await self._handle_aiocqhttp_group_message(event, res)
-                        event.stop_event()
-                        break
+                # 安全处理可能缺少risk_words属性的情况
+                if res and res.risk_level != RiskLevel.Pass:
+                    risk_words = self._ensure_risk_words(res)
+                    if risk_words:  # 只有当有风险词时才处理
+                        res.extra = {"user_id_str": event.get_sender_id()}
+                        if self.config.get("enable_audit_log", True):
+                            self.db_mgr.add_audit_log(res)
+                        
+                        if res.risk_level == RiskLevel.Block:
+                            if (event.get_platform_name() == "aiocqhttp" 
+                                and event.get_group_id()):
+                                await self._handle_aiocqhttp_group_message(event, res)
+                            event.stop_event()
+                            break
         except Exception as e:
             logger.error(f"消息审查失败: {e!s}")
 
@@ -235,11 +212,13 @@ class AIOCensor(Star):
             res = await self.censor_flow.submit_userid(
                 event.get_sender_id(), event.unified_msg_origin
             )
-            if res.risk_level == RiskLevel.Block and res.risk_words:
-                if self.config.get("enable_audit_log", True):
-                    self.db_mgr.add_audit_log(res)
-                event.stop_event()
-                return
+            if res and res.risk_level == RiskLevel.Pass:
+                risk_words = self._ensure_risk_words(res)
+                if risk_words:
+                    if self.config.get("enable_audit_log", True):
+                        self.db_mgr.add_audit_log(res)
+                    event.stop_event()
+                    return
         
         if (
             self.config.get("enable_all_input_censor")
@@ -269,7 +248,6 @@ class AIOCensor(Star):
         """审核模型输出"""
         if self.config.get("enable_output_censor"):
             if not response.result_chain:
-                # 根据配置选择单一审核方式
                 use_baidu = (
                     self.config.get("baidu_censor", {}).get("enable_text_censor", False)
                     and hasattr(self.censor_flow, '_baidu_censor')
@@ -283,15 +261,17 @@ class AIOCensor(Star):
                         response.completion_text, event.unified_msg_origin
                     )
                 
-                if res and res.risk_level != RiskLevel.Pass and res.risk_words:
-                    res.extra = {"user_id_str": event.get_sender_id()}
-                    if self.config.get("enable_audit_log", True):
-                        self.db_mgr.add_audit_log(res)
-                    if res.risk_level == RiskLevel.Block:
-                        if (event.get_platform_name() == "aiocqhttp"
-                            and event.get_group_id()):
-                            await self._handle_aiocqhttp_group_message(event, res)
-                        event.stop_event()
+                if res and res.risk_level != RiskLevel.Pass:
+                    risk_words = self._ensure_risk_words(res)
+                    if risk_words:
+                        res.extra = {"user_id_str": event.get_sender_id()}
+                        if self.config.get("enable_audit_log", True):
+                            self.db_mgr.add_audit_log(res)
+                        if res.risk_level == RiskLevel.Block:
+                            if (event.get_platform_name() == "aiocqhttp"
+                                and event.get_group_id()):
+                                await self._handle_aiocqhttp_group_message(event, res)
+                            event.stop_event()
             elif response.result_chain:
                 await self.handle_message(event, response.result_chain.chain)
 
