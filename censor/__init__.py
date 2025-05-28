@@ -1,23 +1,35 @@
+# data/plugins/astrbot_plugin_aiocensor/censor/__init__.py
 from .aliyun import AliyunCensor
 from .llm import LLMCensor
 from .local import LocalCensor
 from .tencent import TencentCensor
 from .baidu import BaiduCensor
-from .exceptions import CensorError, APILimitError, AuthError
-from .types import RiskLevel  # 假设这是你已有的类型定义
 
-__version__ = "0.1.0"
-__author__ = "Raven95676"
-__license__ = "AGPL-3.0"
-__copyright__ = "Copyright (c) 2025 Raven95676"
+# 确保所有Censor类都继承自CensorBase
 __all__ = [
     "AliyunCensor",
-    "TencentCensor",
+    "LLMCensor", 
     "LocalCensor",
-    "LLMCensor",
-    "BaiduCensor",
-    'CensorError',
-    'APILimitError', 
-    'AuthError', 
-    'RiskLevel'
+    "TencentCensor",
+    "BaiduCensor"
 ]
+
+# 类型提示支持
+try:
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from .aliyun import AliyunCensor as _AliyunCensor
+        from .llm import LLMCensor as _LLMCensor
+        from .local import LocalCensor as _LocalCensor
+        from .tencent import TencentCensor as _TencentCensor
+        from .baidu import BaiduCensor as _BaiduCensor
+        
+        __all__ += [
+            "_AliyunCensor",
+            "_LLMCensor",
+            "_LocalCensor",
+            "_TencentCensor",
+            "_BaiduCensor"
+        ]
+except ImportError:
+    pass
