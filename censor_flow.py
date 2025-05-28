@@ -157,24 +157,20 @@ class CensorFlow(AbstractAsyncContextManager):
 
         msg = Message(content, source)
         try:
-            # 优先使用百度审核（如果配置）
+            # 如果有百度审核器，只使用百度审核
             if self._baidu_censor:
                 risk, reasons = await self._baidu_censor.detect_text(str(msg.content))
-                return CensorResult(
-                    msg, 
-                    risk, 
-                    reasons if reasons else {"百度审核: 无具体原因"}, 
-                    extra
-                )
+                filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+                if filtered_reasons:
+                    return CensorResult(msg, risk, filtered_reasons, extra)
+                return CensorResult(msg, risk, set(), extra)
             
-            # 使用主审核器检查
+            # 否则使用主审核器
             risk, reasons = await self._text_censor.detect_text(str(msg.content))
-            return CensorResult(
-                msg,
-                risk,
-                reasons if reasons else {"本地审核: 无具体原因"},
-                extra
-            )
+            filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+            if filtered_reasons:
+                return CensorResult(msg, risk, filtered_reasons, extra)
+            return CensorResult(msg, risk, set(), extra)
         except Exception as e:
             logger.error(f"处理文本审核任务时发生错误: {e!s}")
             return CensorResult(msg, RiskLevel.Review, {f"审核错误: {e!s}"})
@@ -202,12 +198,10 @@ class CensorFlow(AbstractAsyncContextManager):
         msg = Message(content, source)
         try:
             risk, reasons = await self._baidu_censor.detect_text(str(msg.content))
-            return CensorResult(
-                msg,
-                risk,
-                reasons if reasons else {"百度审核: 无具体原因"},
-                extra
-            )
+            filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+            if filtered_reasons:
+                return CensorResult(msg, risk, filtered_reasons, extra)
+            return CensorResult(msg, risk, set(), extra)
         except Exception as e:
             logger.error(f"使用百度API处理文本审核任务时发生错误: {e!s}")
             return CensorResult(msg, RiskLevel.Review, {f"百度审核错误: {e!s}"})
@@ -259,29 +253,26 @@ class CensorFlow(AbstractAsyncContextManager):
             # 优先使用百度审核（如果配置）
             if self._baidu_censor:
                 risk, reasons = await self._baidu_censor.detect_image(content)
-                return CensorResult(
-                    msg,
-                    risk,
-                    reasons if reasons else {"百度图片审核: 无具体原因"}
-                )
+                filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+                if filtered_reasons:
+                    return CensorResult(msg, risk, filtered_reasons)
+                return CensorResult(msg, risk, set())
 
             # 使用主审核器检查
             risk, reasons = await self._image_censor.detect_image(content)
-            return CensorResult(
-                msg,
-                risk,
-                reasons if reasons else {"本地图片审核: 无具体原因"}
-            )
+            filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+            if filtered_reasons:
+                return CensorResult(msg, risk, filtered_reasons)
+            return CensorResult(msg, risk, set())
         except Exception as e:
             logger.error(f"初次处理图片审核任务时发生错误: {e!s}")
             if img_b64_b:
                 try:
                     risk, reasons = await self._image_censor.detect_image(img_b64_b)
-                    return CensorResult(
-                        msg,
-                        risk,
-                        reasons if reasons else {"本地图片审核: 无具体原因"}
-                    )
+                    filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+                    if filtered_reasons:
+                        return CensorResult(msg, risk, filtered_reasons)
+                    return CensorResult(msg, risk, set())
                 except Exception as e2:
                     logger.error(f"再次处理图片审核任务时发生错误: {e2!s}")
                     return CensorResult(msg, RiskLevel.Review, {f"图片审核错误: {e2!s}"})
@@ -308,11 +299,10 @@ class CensorFlow(AbstractAsyncContextManager):
         msg = Message(content, source)
         try:
             risk, reasons = await self._baidu_censor.detect_image(content)
-            return CensorResult(
-                msg,
-                risk,
-                reasons if reasons else {"百度图片审核: 无具体原因"}
-            )
+            filtered_reasons = {r for r in reasons if r and r != "无具体原因"} if reasons else None
+            if filtered_reasons:
+                return CensorResult(msg, risk, filtered_reasons)
+            return CensorResult(msg, risk, set())
         except Exception as e:
             logger.error(f"使用百度API处理图片审核任务时发生错误: {e!s}")
             return CensorResult(msg, RiskLevel.Review, {f"百度图片审核错误: {e!s}"})
@@ -335,11 +325,10 @@ class CensorFlow(AbstractAsyncContextManager):
         msg = Message(userid, source)
         try:
             risk, reasons = await self._userid_censor.detect_text(str(msg.content))
-            return CensorResult(
-                msg, 
-                risk, 
-                {f"黑名单用户: {next(iter(reasons))}"} if reasons else {"用户ID审核: 无具体原因"}
-            )
+            filtered_reasons = {f"黑名单用户: {r}" for r in reasons if r} if reasons else None
+            if filtered_reasons:
+                return CensorResult(msg, risk, filtered_reasons)
+            return CensorResult(msg, risk, set())
         except Exception as e:
             logger.error(f"处理用户ID识别任务时发生错误: {e!s}")
             return CensorResult(msg, RiskLevel.Review, {f"用户ID审核错误: {e!s}"})

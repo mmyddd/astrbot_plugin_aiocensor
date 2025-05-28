@@ -168,9 +168,11 @@ class AIOCensor(Star):
             if "subType" in item:
                 risk_words.add(str(item["subType"]))
 
+        # 过滤空结果
+        filtered_words = {w for w in risk_words if w and w != "无具体原因"}
         return CensorResult(
             risk_level=risk_level,
-            risk_words=risk_words if risk_words else {"百度审核: 无具体原因"},
+            risk_words=filtered_words if filtered_words else set(),
             content_type=content_type,
             provider="baidu",
         )
@@ -180,13 +182,15 @@ class AIOCensor(Star):
     ):
         """核心消息内容审查逻辑"""
         try:
-            # 遍历消息组件进行审计
             for comp in chain:
                 res = None
                 if isinstance(comp, Plain):
                     # 根据配置选择单一审核方式
-                    use_baidu = self.config.get("baidu_censor", {}).get("enable_text_censor", False)
-                    if use_baidu and hasattr(self.censor_flow, '_baidu_censor'):
+                    use_baidu = (
+                        self.config.get("baidu_censor", {}).get("enable_text_censor", False) 
+                        and hasattr(self.censor_flow, '_baidu_censor')
+                    )
+                    if use_baidu:
                         res = await self.censor_flow.submit_text_with_baidu(
                             comp.text, event.unified_msg_origin
                         )
@@ -196,8 +200,11 @@ class AIOCensor(Star):
                         )
                 elif isinstance(comp, Image) and self.config.get("enable_image_censor"):
                     # 根据配置选择单一审核方式
-                    use_baidu = self.config.get("baidu_censor", {}).get("enable_image_censor", False)
-                    if use_baidu and hasattr(self.censor_flow, '_baidu_censor'):
+                    use_baidu = (
+                        self.config.get("baidu_censor", {}).get("enable_image_censor", False)
+                        and hasattr(self.censor_flow, '_baidu_censor')
+                    )
+                    if use_baidu:
                         res = await self.censor_flow.submit_image_with_baidu(
                             comp.url, event.unified_msg_origin
                         )
@@ -205,23 +212,17 @@ class AIOCensor(Star):
                         res = await self.censor_flow.submit_image(
                             comp.url, event.unified_msg_origin
                         )
-                else:
-                    continue
-
-                if res and res.risk_level != RiskLevel.Pass:
+                
+                # 只有当有实际风险内容时才处理
+                if res and res.risk_level != RiskLevel.Pass and res.risk_words:
                     res.extra = {"user_id_str": event.get_sender_id()}
-                    # 只有在启用日志记录时才添加审核日志
                     if self.config.get("enable_audit_log", True):
                         self.db_mgr.add_audit_log(res)
-
+                    
                     if res.risk_level == RiskLevel.Block:
-                        if (
-                            event.get_platform_name() == "aiocqhttp"
-                            and event.get_group_id()
-                        ):
+                        if (event.get_platform_name() == "aiocqhttp" 
+                            and event.get_group_id()):
                             await self._handle_aiocqhttp_group_message(event, res)
-                        else:
-                            logger.warning("非 aiocqhttp 平台的群消息，无法自动处置")
                         event.stop_event()
                         break
         except Exception as e:
@@ -234,11 +235,12 @@ class AIOCensor(Star):
             res = await self.censor_flow.submit_userid(
                 event.get_sender_id(), event.unified_msg_origin
             )
-            if res.risk_level == RiskLevel.Block:
+            if res.risk_level == RiskLevel.Block and res.risk_words:
                 if self.config.get("enable_audit_log", True):
                     self.db_mgr.add_audit_log(res)
                 event.stop_event()
                 return
+        
         if (
             self.config.get("enable_all_input_censor")
             or self.config.get("enable_input_censor")
@@ -268,8 +270,11 @@ class AIOCensor(Star):
         if self.config.get("enable_output_censor"):
             if not response.result_chain:
                 # 根据配置选择单一审核方式
-                use_baidu = self.config.get("baidu_censor", {}).get("enable_text_censor", False)
-                if use_baidu and hasattr(self.censor_flow, '_baidu_censor'):
+                use_baidu = (
+                    self.config.get("baidu_censor", {}).get("enable_text_censor", False)
+                    and hasattr(self.censor_flow, '_baidu_censor')
+                )
+                if use_baidu:
                     res = await self.censor_flow.submit_text_with_baidu(
                         response.completion_text, event.unified_msg_origin
                     )
@@ -277,18 +282,15 @@ class AIOCensor(Star):
                     res = await self.censor_flow.submit_text(
                         response.completion_text, event.unified_msg_origin
                     )
-                if res and res.risk_level != RiskLevel.Pass:
+                
+                if res and res.risk_level != RiskLevel.Pass and res.risk_words:
                     res.extra = {"user_id_str": event.get_sender_id()}
                     if self.config.get("enable_audit_log", True):
                         self.db_mgr.add_audit_log(res)
                     if res.risk_level == RiskLevel.Block:
-                        if (
-                            event.get_platform_name() == "aiocqhttp"
-                            and event.get_group_id()
-                        ):
+                        if (event.get_platform_name() == "aiocqhttp"
+                            and event.get_group_id()):
                             await self._handle_aiocqhttp_group_message(event, res)
-                        else:
-                            logger.warning("非 aiocqhttp 平台的群消息，无法自动处置")
                         event.stop_event()
             elif response.result_chain:
                 await self.handle_message(event, response.result_chain.chain)
