@@ -128,7 +128,7 @@
       "request_interval": {
           "description": "API请求最小间隔(秒)，默认0.2",
           "type": "float",
-          "default": 0.2
+          "default": 3
       }
     }
   },
