@@ -160,17 +160,24 @@ class CensorFlow(AbstractAsyncContextManager):
             # 优先使用百度审核（如果配置）
             if self._baidu_censor:
                 risk, reasons = await self._baidu_censor.detect_text(str(msg.content))
-                # 如果百度审核已给出明确结论，直接返回结果
-                if risk != RiskLevel.Pass:
-                    return CensorResult(msg, risk, reasons or set(), extra) if extra else CensorResult(msg, risk, reasons or set())
+                return CensorResult(
+                    msg, 
+                    risk, 
+                    reasons if reasons else {"百度审核: 无具体原因"}, 
+                    extra
+                )
             
             # 使用主审核器检查
             risk, reasons = await self._text_censor.detect_text(str(msg.content))
-            # 过滤空的原因集合
-            return CensorResult(msg, risk, reasons or set(), extra) if extra else CensorResult(msg, risk, reasons or set())
+            return CensorResult(
+                msg,
+                risk,
+                reasons if reasons else {"本地审核: 无具体原因"},
+                extra
+            )
         except Exception as e:
             logger.error(f"处理文本审核任务时发生错误: {e!s}")
-            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
+            return CensorResult(msg, RiskLevel.Review, {f"审核错误: {e!s}"})
 
     async def submit_text_with_baidu(
         self,
@@ -195,10 +202,15 @@ class CensorFlow(AbstractAsyncContextManager):
         msg = Message(content, source)
         try:
             risk, reasons = await self._baidu_censor.detect_text(str(msg.content))
-            return CensorResult(msg, risk, reasons or set(), extra) if extra else CensorResult(msg, risk, reasons or set())
+            return CensorResult(
+                msg,
+                risk,
+                reasons if reasons else {"百度审核: 无具体原因"},
+                extra
+            )
         except Exception as e:
             logger.error(f"使用百度API处理文本审核任务时发生错误: {e!s}")
-            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
+            return CensorResult(msg, RiskLevel.Review, {f"百度审核错误: {e!s}"})
 
     async def submit_image(
         self,
@@ -247,27 +259,33 @@ class CensorFlow(AbstractAsyncContextManager):
             # 优先使用百度审核（如果配置）
             if self._baidu_censor:
                 risk, reasons = await self._baidu_censor.detect_image(content)
-                # 如果百度审核已给出明确结论，直接返回结果
-                if risk != RiskLevel.Pass:
-                    return CensorResult(msg, risk, reasons or set())
+                return CensorResult(
+                    msg,
+                    risk,
+                    reasons if reasons else {"百度图片审核: 无具体原因"}
+                )
 
             # 使用主审核器检查
             risk, reasons = await self._image_censor.detect_image(content)
-            # 过滤空的原因集合
-            return CensorResult(msg, risk, reasons or set())
+            return CensorResult(
+                msg,
+                risk,
+                reasons if reasons else {"本地图片审核: 无具体原因"}
+            )
         except Exception as e:
             logger.error(f"初次处理图片审核任务时发生错误: {e!s}")
-
-            # 如果首次失败且有备用格式，尝试使用备用格式
             if img_b64_b:
                 try:
                     risk, reasons = await self._image_censor.detect_image(img_b64_b)
-                    # 过滤空的原因集合
-                    return CensorResult(msg, risk, reasons or set())
+                    return CensorResult(
+                        msg,
+                        risk,
+                        reasons if reasons else {"本地图片审核: 无具体原因"}
+                    )
                 except Exception as e2:
                     logger.error(f"再次处理图片审核任务时发生错误: {e2!s}")
-                    return CensorResult(msg, RiskLevel.Review, {f"{e2!s}"})
-            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
+                    return CensorResult(msg, RiskLevel.Review, {f"图片审核错误: {e2!s}"})
+            return CensorResult(msg, RiskLevel.Review, {f"图片审核错误: {e!s}"})
 
     async def submit_image_with_baidu(
         self,
@@ -290,10 +308,14 @@ class CensorFlow(AbstractAsyncContextManager):
         msg = Message(content, source)
         try:
             risk, reasons = await self._baidu_censor.detect_image(content)
-            return CensorResult(msg, risk, reasons or set())
+            return CensorResult(
+                msg,
+                risk,
+                reasons if reasons else {"百度图片审核: 无具体原因"}
+            )
         except Exception as e:
             logger.error(f"使用百度API处理图片审核任务时发生错误: {e!s}")
-            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
+            return CensorResult(msg, RiskLevel.Review, {f"百度图片审核错误: {e!s}"})
 
     async def submit_userid(
         self,
@@ -312,14 +334,15 @@ class CensorFlow(AbstractAsyncContextManager):
         """
         msg = Message(userid, source)
         try:
-            # 调用用户ID审核器检测
             risk, reasons = await self._userid_censor.detect_text(str(msg.content))
             return CensorResult(
-                msg, risk, {f"黑名单用户{str(reasons)[1:-1]}"} if reasons else set()
+                msg, 
+                risk, 
+                {f"黑名单用户: {next(iter(reasons))}"} if reasons else {"用户ID审核: 无具体原因"}
             )
         except Exception as e:
             logger.error(f"处理用户ID识别任务时发生错误: {e!s}")
-            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
+            return CensorResult(msg, RiskLevel.Review, {f"用户ID审核错误: {e!s}"})
 
     async def close(self) -> None:
         """清理资源

@@ -170,7 +170,7 @@ class AIOCensor(Star):
 
         return CensorResult(
             risk_level=risk_level,
-            risk_words=risk_words,
+            risk_words=risk_words if risk_words else {"百度审核: 无具体原因"},
             content_type=content_type,
             provider="baidu",
         )
@@ -184,8 +184,9 @@ class AIOCensor(Star):
             for comp in chain:
                 res = None
                 if isinstance(comp, Plain):
-                    # 优先使用百度文本审核（如果配置且启用）
-                    if self.config.get("baidu_censor", {}).get("enable_text_censor"):
+                    # 根据配置选择单一审核方式
+                    use_baidu = self.config.get("baidu_censor", {}).get("enable_text_censor", False)
+                    if use_baidu and hasattr(self.censor_flow, '_baidu_censor'):
                         res = await self.censor_flow.submit_text_with_baidu(
                             comp.text, event.unified_msg_origin
                         )
@@ -194,8 +195,9 @@ class AIOCensor(Star):
                             comp.text, event.unified_msg_origin
                         )
                 elif isinstance(comp, Image) and self.config.get("enable_image_censor"):
-                    # 优先使用百度图片审核（如果配置且启用）
-                    if self.config.get("baidu_censor", {}).get("enable_image_censor"):
+                    # 根据配置选择单一审核方式
+                    use_baidu = self.config.get("baidu_censor", {}).get("enable_image_censor", False)
+                    if use_baidu and hasattr(self.censor_flow, '_baidu_censor'):
                         res = await self.censor_flow.submit_image_with_baidu(
                             comp.url, event.unified_msg_origin
                         )
@@ -265,8 +267,9 @@ class AIOCensor(Star):
         """审核模型输出"""
         if self.config.get("enable_output_censor"):
             if not response.result_chain:
-                # 优先使用百度文本审核（如果配置且启用）
-                if self.config.get("baidu_censor", {}).get("enable_text_censor"):
+                # 根据配置选择单一审核方式
+                use_baidu = self.config.get("baidu_censor", {}).get("enable_text_censor", False)
+                if use_baidu and hasattr(self.censor_flow, '_baidu_censor'):
                     res = await self.censor_flow.submit_text_with_baidu(
                         response.completion_text, event.unified_msg_origin
                     )
