@@ -3,6 +3,8 @@ from .llm import LLMCensor
 from .local import LocalCensor
 from .tencent import TencentCensor
 from .baidu import BaiduCensor
+from .exceptions import CensorError, APILimitError, AuthError
+from .types import RiskLevel  # 假设这是你已有的类型定义
 
 __version__ = "0.1.0"
 __author__ = "Raven95676"
@@ -13,5 +15,9 @@ __all__ = [
     "TencentCensor",
     "LocalCensor",
     "LLMCensor",
-    "BaiduCensor"
+    "BaiduCensor",
+    'CensorError',
+    'APILimitError', 
+    'AuthError', 
+    'RiskLevel'
 ]
