@@ -4,8 +4,8 @@ from typing import Any, Dict, Optional
 from datetime import datetime, timedelta
 import logging
 
-from ..common import CensorBase, CensorResult, Message, RiskLevel
-from ..db import DBManager
+from .common import CensorBase, CensorResult, Message, RiskLevel
+from .db import DBManager
 
 logger = logging.getLogger(__name__)
 
