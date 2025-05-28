@@ -34,6 +34,25 @@ class AIOCensor(Star):
         os.makedirs(data_path, exist_ok=True)
         self.db_mgr = DBManager(os.path.join(data_path, "censor.db"))
 
+        # 初始化百度内容安全配置
+        self._init_baidu_config()
+
+    def _init_baidu_config(self):
+        """初始化百度内容安全配置"""
+        if not self.config.get("baidu_censor"):
+            return
+            
+        # 验证百度配置
+        required_keys = ["api_key", "secret_key"]
+        if not all(k in self.config["baidu_censor"] for k in required_keys):
+            logger.error("百度内容安全配置不完整，需要api_key和secret_key")
+            return
+
+        # 设置默认值
+        self.config["baidu_censor"].setdefault("enable_text_censor", True)
+        self.config["baidu_censor"].setdefault("enable_image_censor", True)
+        self.config["baidu_censor"].setdefault("priority", 1)  # 优先级
+
     async def initialize(self):
         logger.debug("初始化 AIOCensor 组件")
         # 生成 Web UI 密钥（如果未设置）
@@ -127,6 +146,35 @@ class AIOCensor(Star):
             except Exception as e:
                 logger.error(f"消息处置失败: {e!s}")
 
+    async def _handle_baidu_censor_result(self, result: dict, content_type: str) -> CensorResult:
+        """处理百度内容安全返回结果"""
+        conclusion = result.get("conclusion", {})
+        conclusion_type = conclusion.get("type", 1)  # 1:合规，2:不合规，3:疑似，4:审核失败
+
+        if conclusion_type == 1:
+            risk_level = RiskLevel.Pass
+        elif conclusion_type == 2:
+            risk_level = RiskLevel.Block
+        else:
+            risk_level = RiskLevel.Review
+
+        risk_words = set()
+        for item in result.get("data", []):
+            if "hits" in item:
+                for hit in item["hits"]:
+                    risk_words.update(hit.get("words", []))
+            if "msg" in item:
+                risk_words.add(item["msg"])
+            if "subType" in item:
+                risk_words.add(str(item["subType"]))
+
+        return CensorResult(
+            risk_level=risk_level,
+            risk_words=risk_words,
+            content_type=content_type,
+            provider="baidu",
+        )
+
     async def handle_message(
         self, event: AstrMessageEvent, chain: list[BaseMessageComponent]
     ):
@@ -136,13 +184,25 @@ class AIOCensor(Star):
             for comp in chain:
                 res = None
                 if isinstance(comp, Plain):
-                    res = await self.censor_flow.submit_text(
-                        comp.text, event.unified_msg_origin
-                    )
+                    # 优先使用百度文本审核（如果配置且启用）
+                    if self.config.get("baidu_censor", {}).get("enable_text_censor"):
+                        res = await self.censor_flow.submit_text_with_baidu(
+                            comp.text, event.unified_msg_origin
+                        )
+                    else:
+                        res = await self.censor_flow.submit_text(
+                            comp.text, event.unified_msg_origin
+                        )
                 elif isinstance(comp, Image) and self.config.get("enable_image_censor"):
-                    res = await self.censor_flow.submit_image(
-                        comp.url, event.unified_msg_origin
-                    )
+                    # 优先使用百度图片审核（如果配置且启用）
+                    if self.config.get("baidu_censor", {}).get("enable_image_censor"):
+                        res = await self.censor_flow.submit_image_with_baidu(
+                            comp.url, event.unified_msg_origin
+                        )
+                    else:
+                        res = await self.censor_flow.submit_image(
+                            comp.url, event.unified_msg_origin
+                        )
                 else:
                     continue
 
@@ -205,9 +265,15 @@ class AIOCensor(Star):
         """审核模型输出"""
         if self.config.get("enable_output_censor"):
             if not response.result_chain:
-                res = await self.censor_flow.submit_text(
-                    response.completion_text, event.unified_msg_origin
-                )
+                # 优先使用百度文本审核（如果配置且启用）
+                if self.config.get("baidu_censor", {}).get("enable_text_censor"):
+                    res = await self.censor_flow.submit_text_with_baidu(
+                        response.completion_text, event.unified_msg_origin
+                    )
+                else:
+                    res = await self.censor_flow.submit_text(
+                        response.completion_text, event.unified_msg_origin
+                    )
                 if res and res.risk_level != RiskLevel.Pass:
                     res.extra = {"user_id_str": event.get_sender_id()}
                     if self.config.get("enable_audit_log", True):

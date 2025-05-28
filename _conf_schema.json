@@ -1,46 +1,46 @@
 {
-  "enable_blacklist":{
-    "description":"是否启用黑名单",
-    "type":"bool"
+  "enable_blacklist": {
+    "description": "是否启用黑名单",
+    "type": "bool"
   },
-  "enable_blacklist_log":{
-    "description":"记录黑名单拦截日志",
-    "type":"bool"
+  "enable_blacklist_log": {
+    "description": "记录黑名单拦截日志",
+    "type": "bool"
   },
-  "enable_audit_log":{
-    "description":"记录审核日志",
-    "type":"bool"
+  "enable_audit_log": {
+    "description": "记录审核日志",
+    "type": "bool"
   },
-  "enable_output_censor":{
-    "description":"是否启用LLM输出审核",
-    "type":"bool"
+  "enable_output_censor": {
+    "description": "是否启用LLM输出审核",
+    "type": "bool"
   },
-  "enable_all_input_censor":{
-    "description":"是否启用全输入审核",
-    "type":"bool"
+  "enable_all_input_censor": {
+    "description": "是否启用全输入审核",
+    "type": "bool"
   },
-  "enable_input_censor":{
-    "description":"是否启用@或唤醒指令后的输入审核",
-    "type":"bool"
+  "enable_input_censor": {
+    "description": "是否启用@或唤醒指令后的输入审核",
+    "type": "bool"
   },
-  "enable_image_censor":{
-    "description":"是否启用图片审核",
-    "type":"bool"
+  "enable_image_censor": {
+    "description": "是否启用图片审核",
+    "type": "bool"
   },
-  "enable_private_msg_censor":{
-    "description":"是否启用私聊审核",
-    "type":"bool"
+  "enable_private_msg_censor": {
+    "description": "是否启用私聊审核",
+    "type": "bool"
   },
-  "enable_group_msg_censor":{
-    "description":"是否启用群管功能（审核群内所有消息）",
-    "hint":"仅aiocqhttp支持禁言与撤回",
-    "type":"bool"
+  "enable_group_msg_censor": {
+    "description": "是否启用群管功能（审核群内所有消息）",
+    "hint": "仅aiocqhttp支持禁言与撤回",
+    "type": "bool"
   },
-  "group_list":{
-    "description":"启用群管功能的群聊",
-    "hint":"启用群管功能的群号列表，留空则对所有群生效",
+  "group_list": {
+    "description": "启用群管功能的群聊",
+    "hint": "启用群管功能的群号列表，留空则对所有群生效",
     "obvious_hint": true,
-    "type":"list"
+    "type": "list"
   },
   "webui": {
     "description": "WebUI 配置",
@@ -113,15 +113,29 @@
       }
     }
   },
+  "baidu": {
+    "description": "百度内容安全配置",
+    "type": "object",
+    "items": {
+      "api_key": {
+        "description": "百度内容安全 API Key",
+        "type": "string"
+      },
+      "secret_key": {
+        "description": "百度内容安全 Secret Key",
+        "type": "string"
+      }
+    }
+  },
   "text_censor_provider": {
     "description": "文本审核提供商",
     "type": "string",
-    "options": ["Aliyun", "LLM", "Tencent", "Local"],
+    "options": ["Aliyun", "LLM", "Tencent", "Local", "Baidu"],
     "default": "Local"
   },
   "image_censor_provider": {
     "description": "图片审核提供商",
     "type": "string",
-    "options": ["Aliyun", "Tencent", "LLM"]
+    "options": ["Aliyun", "Tencent", "LLM", "Baidu"]
   }
 }

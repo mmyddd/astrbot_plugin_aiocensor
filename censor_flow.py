@@ -7,7 +7,7 @@ import aiohttp
 
 from astrbot.api import AstrBotConfig, logger
 
-from .censor import AliyunCensor, LLMCensor, LocalCensor, TencentCensor  # type: ignore
+from .censor import AliyunCensor, LLMCensor, LocalCensor, TencentCensor, BaiduCensor  # type: ignore
 from .common import (  # type: ignore
     CensorBase,
     CensorResult,
@@ -23,6 +23,7 @@ class CensorFlow(AbstractAsyncContextManager):
         "_image_censor",
         "_userid_censor",
         "_config",
+        "_baidu_censor",
     )
 
     def __init__(self, config: AstrBotConfig) -> None:
@@ -55,6 +56,10 @@ class CensorFlow(AbstractAsyncContextManager):
                 "secret_key": config.get("tencent", {}).get("secret_key"),
             },
             "local": {"use_logic": True},
+            "baidu": {
+                "api_key": config.get("baidu", {}).get("api_key"),
+                "secret_key": config.get("baidu", {}).get("secret_key"),
+            },
         }
 
         # 初始化文本审核器
@@ -67,6 +72,11 @@ class CensorFlow(AbstractAsyncContextManager):
 
         # 初始化用户ID审核器
         self._userid_censor = LocalCensor({"use_logic": False})
+
+        # 初始化百度内容安全审核器（如果配置了百度API）
+        self._baidu_censor = None
+        if config.get("baidu", {}).get("api_key") and config.get("baidu", {}).get("secret_key"):
+            self._baidu_censor = BaiduCensor(configs["baidu"])
 
     def _create_censor(
         self, provider: str, configs: dict[str, dict[str, Any]]
@@ -93,6 +103,8 @@ class CensorFlow(AbstractAsyncContextManager):
             elif provider == "Local":
                 logger.debug(configs["local"])
                 return LocalCensor(configs["local"])
+            elif provider == "Baidu":
+                return BaiduCensor(configs["baidu"])
             else:
                 logger.error(f"未知的审核提供商: {provider}")
                 return None
@@ -145,7 +157,14 @@ class CensorFlow(AbstractAsyncContextManager):
 
         msg = Message(content, source)
         try:
-            # 调用文本审核器检测内容
+            # 优先使用百度审核（如果配置）
+            if self._baidu_censor:
+                risk, reasons = await self._baidu_censor.detect_text(str(msg.content))
+                result = CensorResult(msg, risk, reasons, extra) if extra else CensorResult(msg, risk, reasons)
+                if risk != RiskLevel.Pass:
+                    return result
+            
+            # 如果百度审核通过或未配置百度审核，使用主审核器
             risk, reasons = await self._text_censor.detect_text(str(msg.content))
             if extra:
                 return CensorResult(msg, risk, reasons, extra)
@@ -153,6 +172,37 @@ class CensorFlow(AbstractAsyncContextManager):
                 return CensorResult(msg, risk, reasons)
         except Exception as e:
             logger.error(f"处理文本审核任务时发生错误: {e!s}")
+            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
+
+    async def submit_text_with_baidu(
+        self,
+        content: str,
+        source: str,
+        extra: dict[str, Any] | None = None,
+    ) -> CensorResult:
+        """
+        使用百度内容安全API提交文本审核任务
+
+        参数:
+            content: 待审核的文本内容
+            source: 文本来源
+            extra: 可选的额外信息字典
+
+        返回:
+            CensorResult: 审核结果对象
+        """
+        if not self._baidu_censor:
+            raise RuntimeError("百度内容安全审核器未成功初始化，请检查配置")
+
+        msg = Message(content, source)
+        try:
+            risk, reasons = await self._baidu_censor.detect_text(str(msg.content))
+            if extra:
+                return CensorResult(msg, risk, reasons, extra)
+            else:
+                return CensorResult(msg, risk, reasons)
+        except Exception as e:
+            logger.error(f"使用百度API处理文本审核任务时发生错误: {e!s}")
             return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
 
     async def submit_image(
@@ -197,6 +247,17 @@ class CensorFlow(AbstractAsyncContextManager):
                 img_b64_b = f"base64://{img_b64}"
             except Exception as e:
                 logger.error(f"下载图片时发生错误: {e!s}")
+
+        # 优先使用百度审核（如果配置）
+        if self._baidu_censor:
+            try:
+                risk, reasons = await self._baidu_censor.detect_image(content)
+                result = CensorResult(msg, risk, reasons)
+                if risk != RiskLevel.Pass:
+                    return result
+            except Exception as e:
+                logger.error(f"使用百度API处理图片审核任务时发生错误: {e!s}")
+
         # 首次尝试使用原始内容进行审核
         try:
             risk, reasons = await self._image_censor.detect_image(content)
@@ -212,6 +273,32 @@ class CensorFlow(AbstractAsyncContextManager):
                 except Exception as e2:
                     logger.error(f"再次处理图片审核任务时发生错误: {e2!s}")
                     return CensorResult(msg, RiskLevel.Review, {f"{e2!s}"})
+
+    async def submit_image_with_baidu(
+        self,
+        content: str,
+        source: str,
+    ) -> CensorResult:
+        """
+        使用百度内容安全API提交图片审核任务
+
+        参数:
+            content: 待审核的图片内容（通常是URL或路径）
+            source: 图片来源
+
+        返回:
+            CensorResult: 审核结果对象
+        """
+        if not self._baidu_censor:
+            raise RuntimeError("百度内容安全审核器未成功初始化，请检查配置")
+
+        msg = Message(content, source)
+        try:
+            risk, reasons = await self._baidu_censor.detect_image(content)
+            return CensorResult(msg, risk, reasons)
+        except Exception as e:
+            logger.error(f"使用百度API处理图片审核任务时发生错误: {e!s}")
+            return CensorResult(msg, RiskLevel.Review, {f"{e!s}"})
 
     async def submit_userid(
         self,
@@ -251,5 +338,7 @@ class CensorFlow(AbstractAsyncContextManager):
                 await self._image_censor.close()
             if self._userid_censor:
                 await self._userid_censor.close()
+            if self._baidu_censor:
+                await self._baidu_censor.close()
         except Exception as e:
             logger.error(f"关闭时出错: {e!s}")
